@@ -17,7 +17,9 @@
 
 -ifdef(TEST).
 -export([evaluate_subscription_options/5,
-         make_packet/5]).
+         make_packet/5,
+         maybe_send/4,
+         name/1]).
 -endif.
 
 -include_lib("exometer_core/include/exometer.hrl").
@@ -46,34 +48,12 @@
 
 -define(HTTP(Proto), (Proto =:= http orelse Proto =:= https)).
 
+-include("state.hrl").
 -include("log.hrl").
 
 -type options() :: [{atom(), any()}].
 -type value() :: any().
 -type callback_result() :: {ok, state()} | any().
--type precision() :: n | u | ms | s | m | h.
--type protocol() :: http | udp.
-
--record(state, {protocol :: protocol(),
-                db :: binary(), % for http
-                username :: undefined | binary(), % for http
-                password :: undefined | binary(), % for http
-                host :: inet:ip_address() | inet:hostname(), % for udp
-                port :: inet:port_number(),  % for udp
-                timestamping :: boolean(),
-                precision :: precision(),
-                collected_metrics = <<>> :: binary(),
-                batch_window_size = ?DEFAULT_BATCH_WINDOW_SIZE :: pos_integer(),
-                max_udp_size = ?DEFAULT_UDP_MTU :: pos_integer(),
-                tags :: map(),
-                series_name :: atom() | binary(),
-                formatting :: list(),
-                metrics :: map(),
-                autosubscribe :: boolean(),
-                subscriptions_module :: module(),
-                connection :: gen_udp:socket() | reference()}).
--type state() :: #state{}.
-
 
 %% ===================================================================
 %% Public API
