@@ -5,6 +5,8 @@
 
 -include("state.hrl").
 
+-define(NETWORK_TIMEOUT, 5 * 1000).
+
 -import(exometer_report_influxdb, [evaluate_subscription_options/5,
                                    exometer_info/2,
                                    make_packet/5,
@@ -150,14 +152,14 @@ subscribtions_module_test() ->
     gen_udp:close(Socket),
     ok.
 
-send_udp_packet_when_it_hits_size_limit_test() ->
-    TestServerPort = 55555,
-    {ok, ServerSocket} = gen_udp:open(TestServerPort, [{active, false}]),
+send_udp_packets_test() ->
+    {ok, ServerSocket} = gen_udp:open(0, [{active, false}]),
+    {ok, ServerPort} = inet:port(ServerSocket),
     {ok, ClientSocket} = gen_udp:open(0),
     State1 = #state{protocol = udp,
                     connection = ClientSocket,
-                    host = "localhost",
-                    port = TestServerPort,
+                    %host = "localhost",
+                    %port = ServerPort,
                     batch_window_size = 99999,
                     max_udp_size = 70,
                     precision = s,
@@ -165,16 +167,46 @@ send_udp_packet_when_it_hits_size_limit_test() ->
     {ok, State2} = maybe_send(flights, [{type, departure}], #{count => 3}, State1), % fits into packet - send
     {ok, State3} = maybe_send(flights, [{type, arrival}],   #{count => 2}, State2), % fits into packet - send
     {ok, State4} = maybe_send(flights, [{type, arrival}],   #{count => 1}, State3), % doesn't fit - save for later
-    {ok, {_Address, _Port, Packet1}} = gen_udp:recv(ServerSocket, 0, 9999),
     ?assertEqual("flights,type=departure count=3i ~n"
-                 "flights,type=arrival count=2i ~n", Packet1),
+                 "flights,type=arrival count=2i ~n", udp_data_in(ServerSocket)),
     ?assertEqual(<<"flights,type=arrival count=1i ">>, State4#state.collected_metrics),
 
     % Send the remaining metrics when the current batch window ends
     {ok, State5} = exometer_info({exometer_influxdb, send}, State4),
-    {ok, {_Address, _Port, Packet2}} = gen_udp:recv(ServerSocket, 0, 9999),
-    ?assertEqual("flights,type=arrival count=1i ", Packet2),
-    ?assertEqual(<<>>, State5#state.collected_metrics).
+    ?assertEqual("flights,type=arrival count=1i ", udp_data_in(ServerSocket)),
+    ?assertEqual(<<>>, State5#state.collected_metrics),
+
+    % Send data point immediately
+    NoBatchState = State5#state{batch_window_size = 0},
+    {ok, _State6} = maybe_send(delays, [{type, arrival}], #{flight => 1234, minutes => 20}, NoBatchState),
+    ?assertEqual("delays,type=arrival flight=1234i,minutes=20i ", udp_data_in(ServerSocket)).
+
+send_http_request_test() ->
+    {ok, ServerSocket} = gen_tcp:listen(0, [{active, false}]),
+    spawn(fun() ->
+        receive
+            {pid, Pid} ->
+                {ok, Socket} = gen_tcp:accept(ServerSocket, ?NETWORK_TIMEOUT),
+                {ok, Packet} = gen_tcp:recv(Socket, 0, ?NETWORK_TIMEOUT),
+                Pid ! {packet, Packet}
+        end
+    end) ! {pid, self()},
+    {ok, ServerPort} = inet:port(ServerSocket),
+    ServerHost = "localhost",
+    {ok, ClientSocket} = hackney:connect(hackney_tcp_transport, ServerHost, ServerPort),
+    State1 = #state{protocol = http,
+                    connection = ClientSocket,
+                    %host = ServerHost,
+                    %port = ServerPort,
+                    db = <<"test">>,
+                    timestamping = false,
+                    precision = s,
+                    batch_window_size = 0},
+    {ok, _State2} = maybe_send(trains, [{type, arrival}], #{count => 1}, State1),
+    receive
+        {packet, Packet} ->
+            ?assertEqual("test", Packet)
+    end.
 
 name_test() ->
     ?assertEqual(<<"things">>,   name(things)),
@@ -184,3 +216,7 @@ name_test() ->
 
 make_bin_packet(Name, Tags, Fields, Timestamping, Precision) ->
     binary:list_to_bin(make_packet(Name, Tags, Fields, Timestamping, Precision)).
+
+udp_data_in(ServerSocket) ->
+    {ok, {_Address, _Port, Packet}} = gen_udp:recv(ServerSocket, 0, ?NETWORK_TIMEOUT),
+    Packet.
